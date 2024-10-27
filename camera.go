@@ -8,13 +8,15 @@ import (
 	"math"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
 const (
-	PAYLOAD_PREFIX   = "8101" // Default value for visca over ip
-	PAYLOAD_SUFFIX   = "FF"   // Message terminator
-	SEQUENCE_NUM_MAX = math.MaxUint32
+	COMMAND_PREFIX      = "8101" // Default value for visca over ip
+	COMMAND_SUFFIX      = "FF"   // Message terminator
+	PAYLOADTYPE_COMMAND = "0100" // Payload type for Command
+	SEQUENCE_NUM_MAX    = math.MaxUint32
 )
 
 type Camera struct {
@@ -56,22 +58,20 @@ func (c Camera) incSeqNum() int {
 // representation of command payload and returns the binary message
 // to communicate to peripheral device.
 func MakeCommand(commandHex string, seqNum int) ([]byte, error) {
-	var message [24]byte
-	// Payload type is command
-	binary.Append(message[:2], binary.BigEndian, 0x0100)
+	// Allow input string to contain spaces for legibility
+	commandHex = strings.ReplaceAll(commandHex, " ", "")
 
-	payloadHex := PAYLOAD_PREFIX + commandHex + PAYLOAD_SUFFIX
-	payload, err := hex.DecodeString(payloadHex)
+	payload := COMMAND_PREFIX + commandHex + COMMAND_SUFFIX
+	payloadLength := fmt.Sprintf("%04x", len(payload)/2)
+	seqNumStr := fmt.Sprintf("%08x", seqNum)
+
+	messageStr := PAYLOADTYPE_COMMAND + payloadLength + seqNumStr + payload
+	message, err := hex.DecodeString(messageStr)
 	if err != nil {
 		return nil, errors.New("malformed command_hex")
 	}
-	binary.Append(message[2:4], binary.BigEndian, len(payload))
 
-	binary.Append(message[4:8], binary.BigEndian, seqNum)
-
-	binary.Append(message[8:], binary.BigEndian, payload)
-
-	return message[:], nil
+	return message, nil
 }
 
 func (c Camera) SendCommand(commandHex string) error {
