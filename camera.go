@@ -13,10 +13,14 @@ import (
 )
 
 const (
-	CommandPrefix      = "8101" // Default value for visca over ip
-	CommandSuffix      = "FF"   // Message terminator
-	PayloadTypeCommand = "0100" // Payload type for Command
-	SequenceNumMax     = math.MaxUint32
+	CommandPrefix        = "8101" // Default value for visca over ip
+	CommandSuffix        = "FF"   // Message terminator
+	PayloadTypeCommand   = "0100" // Payload type for Command
+	SequenceNumMax       = math.MaxUint32
+	StatusCodeACK        = 0x04
+	StatusCodeCompletion = 0x05
+	MessageBufferSize    = 24
+	DefaultTimeout       = 100 * time.Millisecond
 )
 
 type Config struct {
@@ -116,7 +120,7 @@ func (c *Camera) SendCommand(commandHex string) error {
 			return errors.New("peripheral device is not responsive")
 		}
 
-		err = c.Conn.SetDeadline(time.Now().Add(100 * time.Second))
+		err = c.Conn.SetWriteDeadline(time.Now().Add(DefaultTimeout))
 		if err != nil {
 			return fmt.Errorf("failed to set read deadline: %w", err)
 		}
