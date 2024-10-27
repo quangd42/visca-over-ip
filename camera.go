@@ -19,11 +19,23 @@ const (
 	SequenceNumMax     = math.MaxUint32
 )
 
+type Config struct {
+	MaxRetries int
+	Timeout    time.Duration
+	Debug      bool // TODO: Add logging for debugging
+}
+
+type Stats struct {
+	missedResponses int
+	timeouts        int
+}
+
+// Camera represents a peripheral device that can be controlled via VISCA over IP.
 type Camera struct {
-	Conn                 *net.UDPConn
-	seqNum               int // Sequence Number
-	missedResponsesCount int
-	MaxNumRetries        int
+	Conn   *net.UDPConn
+	seqNum int // Sequence Number
+	config Config
+	stats  Stats
 }
 
 // NewCamera returns a Camera struct that holds information to communicate
@@ -34,7 +46,20 @@ type Camera struct {
 //
 // MaxNumRetries can be updated post initialization.
 func NewCamera(conn *net.UDPConn) (Camera, error) {
-	camera := Camera{conn, 0, 0, 5}
+	cfg := Config{
+		MaxRetries: 5,
+		Timeout:    DefaultTimeout,
+		Debug:      false,
+	}
+	return NewCameraWithConfig(conn, cfg)
+}
+func NewCameraWithConfig(conn *net.UDPConn, cfg Config) (Camera, error) {
+	camera := Camera{
+		Conn:   conn,
+		seqNum: 0,
+		config: cfg,
+		stats:  Stats{},
+	}
 	err := camera.ResetSequenceNumber()
 	if err != nil {
 		return Camera{}, err
@@ -82,18 +107,19 @@ func (c *Camera) SendCommand(commandHex string) error {
 	}
 
 	for count := 1; ; count += 1 {
-		if count > c.MaxNumRetries {
+		if count > c.config.MaxRetries {
 			return errors.New("peripheral device is not responsive")
 		}
 
 		err = c.Conn.SetDeadline(time.Now().Add(100 * time.Second))
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to set read deadline: %w", err)
 		}
 		_, err = c.Conn.Write(message)
 		if err != nil {
 			// If write times out, simply try again
 			if errors.Is(err, os.ErrDeadlineExceeded) {
+				c.config.Timeout += 1
 				continue
 			}
 			return err
@@ -103,9 +129,10 @@ func (c *Camera) SendCommand(commandHex string) error {
 		if err != nil {
 			// If read times out, simply consider response missed
 			if errors.Is(err, os.ErrDeadlineExceeded) {
+				c.config.Timeout += 1
 				continue
 			}
-			return fmt.Errorf("response error: %s", err)
+			return fmt.Errorf("response error: %w", err)
 		}
 
 		break
@@ -181,4 +208,13 @@ func (c *Camera) ResetSequenceNumber() error {
 	}
 	c.seqNum = 1
 	return nil
+}
+
+
+func (c *Camera) Stats() string {
+	return fmt.Sprintf(
+		"Missed Responses: %d, Timeouts: %d",
+		c.stats.missedResponses,
+		c.stats.timeouts,
+	)
 }
