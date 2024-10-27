@@ -26,7 +26,7 @@ const (
 type Config struct {
 	MaxRetries int
 	Timeout    time.Duration
-	Debug      bool // TODO: Add logging for debugging
+	Debug      bool
 }
 
 type Stats struct {
@@ -154,45 +154,63 @@ func (c *Camera) SendCommand(commandHex string) error {
 // If the response status code is not 4 (ACK) or 5 (completion) then it
 // return the payload of the response as the error message.
 func (c *Camera) receiveCommandResponse(seqNum int) error {
-	var res []byte
+	res := make([]byte, MessageBufferSize)
 
 	for {
 		// NOTE: handle random request not from camera with ReadFrom
-		bytesReadCount, err := c.Conn.Read(res)
-		if bytesReadCount == 0 {
-			return errors.New("empty response received")
+
+		// Set read deadline for timeout
+		err := c.Conn.SetReadDeadline(time.Now().Add(DefaultTimeout))
+		if err != nil {
+			return fmt.Errorf("failed to set read deadline: %w", err)
+		}
+		bytesRead, err := c.Conn.Read(res)
+		// Ensure message received has enough bytes for header (8)
+		// and minimum payload (4)
+		if bytesRead < 12 {
+			return fmt.Errorf("response too short: got %d bytes, expected at least 12", bytesRead)
 		}
 		if err != nil {
 			return err
 		}
 
-		var resSeqNum int
-		_, err = binary.Decode(res[4:8], binary.BigEndian, resSeqNum)
-		if err != nil {
-			return err
-		}
-		// ignore late responses from earlier messages
-		if resSeqNum < seqNum {
-			continue
-		}
+		resSeqNum := binary.BigEndian.Uint32(res[4:8])
 
-		var resPayload []byte
-		_, err = binary.Decode(res[8:], binary.BigEndian, resPayload)
-		if err != nil {
-			return err
-		}
-		// TODO: test if this is correct way of getting statusCode
-		switch statusCode := int(resPayload[3:4][0]); statusCode {
-		case 4:
-			err = c.Conn.SetDeadline(time.Now().Add(100 * time.Second))
-			if err != nil {
-				return err
+		// Ignore late responses from earlier messages.
+		// resSeqNum cannot be larger than seqNum.
+		// When there are missed responses from peripheral device, the resSeqNum of subsequent
+		// responses will be the same as seqNum, in which case we can continue processing.
+		if int(resSeqNum) < seqNum {
+			if c.config.Debug {
+				fmt.Printf("Received old response: expected=%d, got=%d\n", seqNum, resSeqNum)
 			}
 			continue
-		case 5:
+		}
+
+		// Extract payload (everything after first 8 bytes)
+		resPayload := res[8:bytesRead]
+
+		if len(resPayload) < 4 {
+			return errors.New("response payload too short")
+		}
+
+		// Status code is at index 3 in the payload
+		switch statusCode := resPayload[3]; statusCode {
+		case StatusCodeACK:
+			if c.config.Debug {
+				fmt.Printf("Received ACK for sequence %d\n", seqNum)
+			}
+			continue
+		case StatusCodeCompletion:
+			if c.config.Debug {
+				fmt.Printf("Received Completion for sequence %d\n", seqNum)
+			}
 			return nil
 		default:
-			return fmt.Errorf("peripheral device error: %s", resPayload)
+			return fmt.Errorf(
+				"peripheral device error: payload=%x, statusCode=%x",
+				resPayload, statusCode,
+			)
 		}
 
 	}
