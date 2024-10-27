@@ -220,19 +220,38 @@ func (c *Camera) receiveCommandResponse(seqNum int) error {
 // resets its sequence number to 0. The value that was set as the
 // sequence number is ignored.
 func (c *Camera) ResetSequenceNumber() error {
-	_, err := c.Conn.Write([]byte("02 00 00 01 00 00 00 01 01"))
+	resetCmd := []byte{0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01}
+
+	err := c.Conn.SetWriteDeadline(time.Now().Add(DefaultTimeout))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
-	var res, resPayload []byte
+
+	_, err = c.Conn.Write(resetCmd)
+	if err != nil {
+		return fmt.Errorf("failed to send reset command: %w", err)
+	}
+
+	res := make([]byte, MessageBufferSize)
+
+	err = c.Conn.SetReadDeadline(time.Now().Add(DefaultTimeout))
+	if err != nil {
+		return fmt.Errorf("failed to set read deadline: %w", err)
+	}
+
 	bytesRead, err := c.Conn.Read(res)
-	if bytesRead == 0 || err != nil {
-		return errors.New("failed to reset sequence numeber")
+	if bytesRead < 9 { // Minimum expected response size
+		return fmt.Errorf("reset response too short: got %d bytes", bytesRead)
 	}
-	_, err = binary.Decode(res[8:], binary.BigEndian, resPayload)
-	if err != nil || int(resPayload[0]) != 0x01 {
-		return errors.New("failed to reset sequence numeber")
+	if err != nil {
+		return fmt.Errorf("failed to read reset response: %w", err)
 	}
+
+	// Check response payload
+	if res[8] != 0x01 {
+		return fmt.Errorf("invalid reset response: %x", res[:bytesRead])
+	}
+
 	c.seqNum = 1
 	return nil
 }
