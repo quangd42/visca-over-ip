@@ -53,6 +53,7 @@ func NewCamera(conn *net.UDPConn) (Camera, error) {
 	}
 	return NewCameraWithConfig(conn, cfg)
 }
+
 func NewCameraWithConfig(conn *net.UDPConn, cfg Config) (Camera, error) {
 	camera := Camera{
 		Conn:   conn,
@@ -84,16 +85,20 @@ func (c *Camera) incSeqNum() int {
 // to communicate to peripheral device.
 func MakeCommand(commandHex string, seqNum int) ([]byte, error) {
 	// Allow input string to contain spaces for legibility
-	commandHex = strings.ReplaceAll(commandHex, " ", "")
+	cleaned := strings.ReplaceAll(commandHex, " ", "")
 
-	payload := CommandPrefix + commandHex + CommandSuffix
+	if len(cleaned)%2 != 0 {
+		return nil, fmt.Errorf("command hex must have even length: %s", commandHex)
+	}
+
+	payload := CommandPrefix + cleaned + CommandSuffix
 	payloadLength := fmt.Sprintf("%04x", len(payload)/2)
 	seqNumStr := fmt.Sprintf("%08x", seqNum)
 
 	messageStr := PayloadTypeCommand + payloadLength + seqNumStr + payload
 	message, err := hex.DecodeString(messageStr)
 	if err != nil {
-		return nil, errors.New("malformed command_hex")
+		return nil, fmt.Errorf("invalid hex in command: %s", commandHex)
 	}
 
 	return message, nil
