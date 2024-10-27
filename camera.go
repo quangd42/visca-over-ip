@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	COMMAND_PREFIX      = "8101" // Default value for visca over ip
-	COMMAND_SUFFIX      = "FF"   // Message terminator
-	PAYLOADTYPE_COMMAND = "0100" // Payload type for Command
-	SEQUENCE_NUM_MAX    = math.MaxUint32
+	CommandPrefix      = "8101" // Default value for visca over ip
+	CommandSuffix      = "FF"   // Message terminator
+	PayloadTypeCommand = "0100" // Payload type for Command
+	SequenceNumMax     = math.MaxUint32
 )
 
 type Camera struct {
@@ -46,9 +46,9 @@ func NewCamera(conn *net.UDPConn) (Camera, error) {
 	return camera, nil
 }
 
-func (c Camera) incSeqNum() int {
+func (c *Camera) incSeqNum() int {
 	c.seqNum += 1
-	if c.seqNum > SEQUENCE_NUM_MAX {
+	if c.seqNum > SequenceNumMax {
 		c.seqNum = 0
 	}
 	return c.seqNum
@@ -61,11 +61,11 @@ func MakeCommand(commandHex string, seqNum int) ([]byte, error) {
 	// Allow input string to contain spaces for legibility
 	commandHex = strings.ReplaceAll(commandHex, " ", "")
 
-	payload := COMMAND_PREFIX + commandHex + COMMAND_SUFFIX
+	payload := CommandPrefix + commandHex + CommandSuffix
 	payloadLength := fmt.Sprintf("%04x", len(payload)/2)
 	seqNumStr := fmt.Sprintf("%08x", seqNum)
 
-	messageStr := PAYLOADTYPE_COMMAND + payloadLength + seqNumStr + payload
+	messageStr := PayloadTypeCommand + payloadLength + seqNumStr + payload
 	message, err := hex.DecodeString(messageStr)
 	if err != nil {
 		return nil, errors.New("malformed command_hex")
@@ -74,7 +74,7 @@ func MakeCommand(commandHex string, seqNum int) ([]byte, error) {
 	return message, nil
 }
 
-func (c Camera) SendCommand(commandHex string) error {
+func (c *Camera) SendCommand(commandHex string) error {
 	seqNum := c.incSeqNum()
 	message, err := MakeCommand(commandHex, seqNum)
 	if err != nil {
@@ -86,7 +86,10 @@ func (c Camera) SendCommand(commandHex string) error {
 			return errors.New("peripheral device is not responsive")
 		}
 
-		c.Conn.SetDeadline(time.Now().Add(100 * time.Second))
+		err = c.Conn.SetDeadline(time.Now().Add(100 * time.Second))
+		if err != nil {
+			return err
+		}
 		_, err = c.Conn.Write(message)
 		if err != nil {
 			// If write times out, simply try again
@@ -102,7 +105,7 @@ func (c Camera) SendCommand(commandHex string) error {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				continue
 			}
-			return fmt.Errorf("response error: %s\n", err)
+			return fmt.Errorf("response error: %s", err)
 		}
 
 		break
@@ -114,7 +117,7 @@ func (c Camera) SendCommand(commandHex string) error {
 // receiveCommandResponse blocks until it times out or gets a response.
 // If the response status code is not 4 (ACK) or 5 (completion) then it
 // return the payload of the response as the error message.
-func (c Camera) receiveCommandResponse(seqNum int) error {
+func (c *Camera) receiveCommandResponse(seqNum int) error {
 	var res []byte
 
 	for {
@@ -145,12 +148,15 @@ func (c Camera) receiveCommandResponse(seqNum int) error {
 		// TODO: test if this is correct way of getting statusCode
 		switch statusCode := int(resPayload[3:4][0]); statusCode {
 		case 4:
-			c.Conn.SetDeadline(time.Now().Add(100 * time.Second))
+			err = c.Conn.SetDeadline(time.Now().Add(100 * time.Second))
+			if err != nil {
+				return err
+			}
 			continue
 		case 5:
 			return nil
 		default:
-			return fmt.Errorf("peripheral device error: %s \n", resPayload)
+			return fmt.Errorf("peripheral device error: %s", resPayload)
 		}
 
 	}
@@ -159,7 +165,7 @@ func (c Camera) receiveCommandResponse(seqNum int) error {
 // ResetSequenceNumber calls RESET command to peripheral device, which
 // resets its sequence number to 0. The value that was set as the
 // sequence number is ignored.
-func (c Camera) ResetSequenceNumber() error {
+func (c *Camera) ResetSequenceNumber() error {
 	_, err := c.Conn.Write([]byte("02 00 00 01 00 00 00 01 01"))
 	if err != nil {
 		return err
