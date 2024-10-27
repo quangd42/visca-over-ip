@@ -256,6 +256,14 @@ func (c *Camera) ResetSequenceNumber() error {
 	return nil
 }
 
+// Close needs to be called before connection can be used to connect
+// to another peripheral device.
+func (c *Camera) Close() error {
+	if c.Conn != nil {
+		return c.Conn.Close()
+	}
+	return nil
+}
 
 func (c *Camera) Stats() string {
 	return fmt.Sprintf(
