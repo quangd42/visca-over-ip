@@ -36,14 +36,21 @@ func TestMakeCommand(t *testing.T) {
 	}
 
 	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wantStr := strings.ReplaceAll(tc.wantStr, " ", "")
+			want, err := hex.DecodeString(wantStr)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		wantStr := strings.ReplaceAll(tc.wantStr, " ", "")
-		want, err := hex.DecodeString(wantStr)
-		if err != nil {
-			t.Fatal(err)
-		}
+			message, err := MakeCommand(tc.command, tc.seqNum)
+			if !bytes.Equal(message, want) || err != nil {
+				t.Errorf("\n%s,\nMakeCommand(%s) = %#v, %v,\nwant %#v, nil", tc.name, tc.command, message, err, want)
+			}
+		})
+	}
+}
 
-		message, err := MakeCommand(tc.command, tc.seqNum)
 
 		if !bytes.Equal(message, want) || err != nil {
 			t.Errorf("\n%s,\nMakeCommand(%s) = %#v, %v,\nwant %#v, nil", tc.name, tc.command, message, err, want)

@@ -7,8 +7,11 @@ audit:
   go run golang.org/x/vuln/cmd/govulncheck@latest ./...
   go test -vet=off -v
 
+# run tests
+test:
+  go test -v
+
 # format code and tidy modfile
 tidy:
   go fmt ./...
   go mod tidy -v
-
