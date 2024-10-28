@@ -13,14 +13,21 @@ import (
 )
 
 const (
-	CommandPrefix        = "8101" // Default value for visca over ip
-	CommandSuffix        = "FF"   // Message terminator
-	PayloadTypeCommand   = "0100" // Payload type for Command
-	SequenceNumMax       = math.MaxUint32
+	// VISCA over IP constants
+	CommandPrefix      = "8101"
+	CommandSuffix      = "FF"   // Message terminator
+	PayloadTypeCommand = "0100" // Payload type for Command
+	SequenceNumMax     = math.MaxUint32
+	MessageBufferSize  = 24
+
+	// Status Codes
 	StatusCodeACK        = 0x04
 	StatusCodeCompletion = 0x05
-	MessageBufferSize    = 24
-	DefaultTimeout       = 100 * time.Millisecond
+
+	// Timeout
+	DefaultTimeout = 100 * time.Millisecond
+	InitialBackoff = 5 * time.Millisecond
+	MaxBackoff     = 50 * time.Millisecond
 )
 
 type Config struct {
@@ -69,7 +76,8 @@ func NewCameraWithConfig(conn *net.UDPConn, cfg Config) (Camera, error) {
 	if err != nil {
 		return Camera{}, err
 	}
-	err = camera.SendCommand("00 01") // NOTE: clear the camera's interface socket, but why?
+	// NOTE: clear the camera's interface socket
+	err = camera.SendCommand("00 01")
 	if err != nil {
 		return Camera{}, err
 	}
@@ -115,12 +123,14 @@ func (c *Camera) SendCommand(commandHex string) error {
 		return err
 	}
 
+	backoff := InitialBackoff
 	for count := 1; ; count += 1 {
 		if count > c.config.MaxRetries {
+			c.stats.timeouts++
 			return errors.New("peripheral device is not responsive")
 		}
 
-		err = c.Conn.SetWriteDeadline(time.Now().Add(DefaultTimeout))
+		err = c.Conn.SetWriteDeadline(time.Now().Add(c.config.Timeout))
 		if err != nil {
 			return fmt.Errorf("failed to set read deadline: %w", err)
 		}
@@ -128,7 +138,9 @@ func (c *Camera) SendCommand(commandHex string) error {
 		if err != nil {
 			// If write times out, simply try again
 			if errors.Is(err, os.ErrDeadlineExceeded) {
-				c.config.Timeout += 1
+				c.stats.timeouts++
+				time.Sleep(backoff)
+				backoff = time.Duration(math.Min(float64(backoff)*2, float64(MaxBackoff)))
 				continue
 			}
 			return err
@@ -138,7 +150,9 @@ func (c *Camera) SendCommand(commandHex string) error {
 		if err != nil {
 			// If read times out, simply consider response missed
 			if errors.Is(err, os.ErrDeadlineExceeded) {
-				c.config.Timeout += 1
+				c.stats.missedResponses++
+				time.Sleep(backoff)
+				backoff = time.Duration(math.Min(float64(backoff)*2, float64(MaxBackoff)))
 				continue
 			}
 			return fmt.Errorf("response error: %w", err)
@@ -160,7 +174,7 @@ func (c *Camera) receiveCommandResponse(seqNum int) error {
 		// NOTE: handle random request not from camera with ReadFrom
 
 		// Set read deadline for timeout
-		err := c.Conn.SetReadDeadline(time.Now().Add(DefaultTimeout))
+		err := c.Conn.SetReadDeadline(time.Now().Add(c.config.Timeout))
 		if err != nil {
 			return fmt.Errorf("failed to set read deadline: %w", err)
 		}
@@ -222,7 +236,7 @@ func (c *Camera) receiveCommandResponse(seqNum int) error {
 func (c *Camera) ResetSequenceNumber() error {
 	resetCmd := []byte{0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01}
 
-	err := c.Conn.SetWriteDeadline(time.Now().Add(DefaultTimeout))
+	err := c.Conn.SetWriteDeadline(time.Now().Add(c.config.Timeout))
 	if err != nil {
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
@@ -234,7 +248,7 @@ func (c *Camera) ResetSequenceNumber() error {
 
 	res := make([]byte, MessageBufferSize)
 
-	err = c.Conn.SetReadDeadline(time.Now().Add(DefaultTimeout))
+	err = c.Conn.SetReadDeadline(time.Now().Add(c.config.Timeout))
 	if err != nil {
 		return fmt.Errorf("failed to set read deadline: %w", err)
 	}
