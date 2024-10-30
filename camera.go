@@ -21,14 +21,19 @@ const (
 	MessageBufferSize  = 24
 
 	// Status Codes
-	StatusCodeACK        = 0x04
-	StatusCodeCompletion = 0x05
+	StatusCodeACK        = 4
+	StatusCodeCompletion = 5
 
 	// Timeout
 	DefaultTimeout = 100 * time.Millisecond
 	InitialBackoff = 5 * time.Millisecond
 	MaxBackoff     = 50 * time.Millisecond
 )
+
+type UDPConn interface {
+	net.Conn
+	net.PacketConn
+}
 
 type Config struct {
 	MaxRetries int
@@ -43,9 +48,9 @@ type Stats struct {
 
 // Camera represents a peripheral device that can be controlled via VISCA over IP.
 type Camera struct {
-	Conn   *net.UDPConn
+	Conn   UDPConn
 	seqNum int // Sequence Number
-	config Config
+	Config Config
 	stats  Stats
 }
 
@@ -56,7 +61,7 @@ type Camera struct {
 // number and clear the interface socket of the connected peripheral device.
 //
 // MaxNumRetries can be updated post initialization.
-func NewCamera(conn *net.UDPConn) (Camera, error) {
+func NewCamera(conn UDPConn) (Camera, error) {
 	cfg := Config{
 		MaxRetries: 5,
 		Timeout:    DefaultTimeout,
@@ -65,11 +70,11 @@ func NewCamera(conn *net.UDPConn) (Camera, error) {
 	return NewCameraWithConfig(conn, cfg)
 }
 
-func NewCameraWithConfig(conn *net.UDPConn, cfg Config) (Camera, error) {
+func NewCameraWithConfig(conn UDPConn, cfg Config) (Camera, error) {
 	camera := Camera{
 		Conn:   conn,
 		seqNum: 0,
-		config: cfg,
+		Config: cfg,
 		stats:  Stats{},
 	}
 	err := camera.ResetSequenceNumber()
@@ -125,12 +130,12 @@ func (c *Camera) SendCommand(commandHex string) error {
 
 	backoff := InitialBackoff
 	for count := 1; ; count += 1 {
-		if count > c.config.MaxRetries {
+		if count > c.Config.MaxRetries {
 			c.stats.timeouts++
 			return errors.New("peripheral device is not responsive")
 		}
 
-		err = c.Conn.SetWriteDeadline(time.Now().Add(c.config.Timeout))
+		err = c.Conn.SetWriteDeadline(time.Now().Add(c.Config.Timeout))
 		if err != nil {
 			return fmt.Errorf("failed to set read deadline: %w", err)
 		}
@@ -171,14 +176,27 @@ func (c *Camera) receiveCommandResponse(seqNum int) error {
 	res := make([]byte, MessageBufferSize)
 
 	for {
-		// NOTE: handle random request not from camera with ReadFrom
-
 		// Set read deadline for timeout
-		err := c.Conn.SetReadDeadline(time.Now().Add(c.config.Timeout))
+		err := c.Conn.SetReadDeadline(time.Now().Add(c.Config.Timeout))
 		if err != nil {
 			return fmt.Errorf("failed to set read deadline: %w", err)
 		}
-		bytesRead, err := c.Conn.Read(res)
+		bytesRead, addr, err := c.Conn.ReadFrom(res)
+		if err != nil {
+			// If read times out, error will be os.ErrDeadlineExceeded, which can be
+			// returned to the caller to retry or give up.
+			return err
+		}
+		// If the process gets here, a response is received. All further processing
+		// will continue the loop (which will extend the deadline) or return to the caller.
+
+		// Verify the sender address matches expected camera address
+		if addr.String() != c.Conn.RemoteAddr().String() {
+			if c.Config.Debug {
+				fmt.Printf("Received packet from unexpected address: %s\n", addr.String())
+			}
+			continue
+		}
 		// Ensure message received has enough bytes for header (8)
 		// and minimum payload (4)
 		if bytesRead < 12 {
@@ -195,12 +213,11 @@ func (c *Camera) receiveCommandResponse(seqNum int) error {
 		// When there are missed responses from peripheral device, the resSeqNum of subsequent
 		// responses will be the same as seqNum, in which case we can continue processing.
 		if int(resSeqNum) < seqNum {
-			if c.config.Debug {
+			if c.Config.Debug {
 				fmt.Printf("Received old response: expected=%d, got=%d\n", seqNum, resSeqNum)
 			}
 			continue
 		}
-
 		// Extract payload (everything after first 8 bytes)
 		resPayload := res[8:bytesRead]
 
@@ -208,15 +225,16 @@ func (c *Camera) receiveCommandResponse(seqNum int) error {
 			return errors.New("response payload too short")
 		}
 
-		// Status code is at index 3 in the payload
-		switch statusCode := resPayload[3]; statusCode {
+		// Status code is the first 4 bit at index 1 in the payload
+		statusCode := resPayload[1] >> 4
+		switch statusCode {
 		case StatusCodeACK:
-			if c.config.Debug {
+			if c.Config.Debug {
 				fmt.Printf("Received ACK for sequence %d\n", seqNum)
 			}
 			continue
 		case StatusCodeCompletion:
-			if c.config.Debug {
+			if c.Config.Debug {
 				fmt.Printf("Received Completion for sequence %d\n", seqNum)
 			}
 			return nil
@@ -236,7 +254,7 @@ func (c *Camera) receiveCommandResponse(seqNum int) error {
 func (c *Camera) ResetSequenceNumber() error {
 	resetCmd := []byte{0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01}
 
-	err := c.Conn.SetWriteDeadline(time.Now().Add(c.config.Timeout))
+	err := c.Conn.SetWriteDeadline(time.Now().Add(c.Config.Timeout))
 	if err != nil {
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
@@ -248,7 +266,7 @@ func (c *Camera) ResetSequenceNumber() error {
 
 	res := make([]byte, MessageBufferSize)
 
-	err = c.Conn.SetReadDeadline(time.Now().Add(c.config.Timeout))
+	err = c.Conn.SetReadDeadline(time.Now().Add(c.Config.Timeout))
 	if err != nil {
 		return fmt.Errorf("failed to set read deadline: %w", err)
 	}
